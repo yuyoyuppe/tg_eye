@@ -1,3 +1,5 @@
 build/
 *.obj
 *_pp.asm
+tdlib
+*.sqlite3

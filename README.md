@@ -21,12 +21,21 @@ premake5 vs2022 --tdpath=<path_to_td>
 ```
 
 ## Arch
-- Make to have an [AUR helper](https://wiki.archlinux.org/title/AUR_helpers).
+- vcpkg:
+```sh
+sudo pacman -Syu base-devel git curl zip unzip tar cmake ninja
+git clone https://github.com/microsoft/vcpkg
+./vcpkg/bootstrap-vcpkg.sh
+./vcpkg/vcpkg install gperf zlib openssl
+```
 - Install deps
 ```sh
 pacman -S clang cmake gperf php
 ```
-- Build tdlib:
+- Build tdlib WITHOUT LTO using https://tdlib.github.io/td/build.html?language=C%2B%2B
+- Build tg_eye
 ```sh
-yay -S libtd
+# premake5 is dying -> override cpp standard
+premake5 gmake2 && sed -i 's/-std=c++20/-std=c++23/g' ./build/app.make  && make -C build config=release
 ```
+- 

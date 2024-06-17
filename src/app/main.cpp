@@ -12,7 +12,7 @@ int main() {
 
     try {
         tg_eye_client client{db{"tg_eye_stats.sqlite3"}};
-        std::this_thread::sleep_for(std::chrono::seconds(600));
+        std::this_thread::sleep_until(std::chrono::system_clock::now() + std::chrono::hours(std::numeric_limits<int>::max()));
     } catch(const std::exception & ex) { std::cerr << ex.what() << std::endl; }
 
 
