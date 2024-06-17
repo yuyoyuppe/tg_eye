@@ -52,7 +52,7 @@ void tg_client::process_update(td_api::object_ptr<td_api::Object> update) {
               is_online = true;
               std::cout << "online until " << format_timestamp(online->expires_) << "\n";
           } else if(const auto offline = try_move_as<td_api::userStatusOffline>(update_user_status.status_)) {
-              timestamp = offline->was_online_;
+              timestamp = offline->was_online_ + 1;
               std::cout << "offline since " << format_timestamp(offline->was_online_) << "\n";
           }
 
