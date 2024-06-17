@@ -1,39 +1,26 @@
-#include "tg_client.hpp"
+#pragma once
 #include <iostream>
-#include <iomanip>
-#include <ctime>
 #include <sstream>
 
 #include "overloaded.hpp"
 
-template <typename T, typename Base>
-td_api::object_ptr<T> try_move_as(td_api::object_ptr<Base> & ptr) {
-    return ptr->get_id() == T::ID ? td::move_tl_object_as<T>(std::move(ptr)) : nullptr;
-}
-
-std::string format_timestamp(int32_t timestamp) {
-    std::time_t        time = static_cast<std::time_t>(timestamp);
-    std::tm *          tm   = std::localtime(&time);
-    std::ostringstream oss;
-    oss << std::put_time(tm, "%Y-%m-%d %H:%M:%S");
-    return oss.str();
-}
-
-
-tg_client::tg_client(db user_status_db) : _db{std::move(user_status_db)} {
+template <typename Derived>
+tg_client<Derived>::tg_client() {
     _client_id = _client_manager.create_client_id();
     send_query(td_api::make_object<td_api::getOption>("version"), {});
     _event_loop = std::thread{[this] { event_loop(); }};
 }
 
-void tg_client::send_query(td_api::object_ptr<td_api::Function> f, std::function<void(Object)> handler) {
+template <typename Derived>
+void tg_client<Derived>::send_query(td_api::object_ptr<td_api::Function> f, std::function<void(Object)> handler) {
     const auto query_id = next_query_id();
     if(handler)
         handlers_.emplace(query_id, std::move(handler));
     _client_manager.send(_client_id, query_id, std::move(f));
 }
 
-void tg_client::process_update(td_api::object_ptr<td_api::Object> update) {
+template <typename Derived>
+void tg_client<Derived>::process_update(td_api::object_ptr<td_api::Object> update) {
     const auto handler = overloaded(
       [this](td_api::updateAuthorizationState & update_authorization_state) {
           authorization_state_ = std::move(update_authorization_state.authorization_state_);
@@ -41,30 +28,19 @@ void tg_client::process_update(td_api::object_ptr<td_api::Object> update) {
       },
       [this](td_api::updateUser & update_user) {
           auto user_id    = update_user.user_->id_;
-          users_[user_id] = std::move(update_user.user_);
+          _users[user_id] = std::move(update_user.user_);
       },
-      [this](td_api::updateUserStatus & update_user_status) {
-          const auto user_id = update_user_status.user_id_;
-          std::cout << get_user_name(user_id) << " is ";
-          bool is_online = false;
-          auto timestamp = static_cast<int32_t>(std::time(nullptr));
-          if(const auto online = try_move_as<td_api::userStatusOnline>(update_user_status.status_)) {
-              is_online = true;
-              std::cout << "online until " << format_timestamp(online->expires_) << "\n";
-          } else if(const auto offline = try_move_as<td_api::userStatusOffline>(update_user_status.status_)) {
-              timestamp = offline->was_online_ + 1;
-              std::cout << "offline since " << format_timestamp(offline->was_online_) << "\n";
+      [this]<typename update_t>(update_t & update) {
+          constexpr bool derived_has_handler = requires(Derived client, update_t update) { client(update); };
+          if constexpr(derived_has_handler) {
+              static_cast<Derived *>(this)->operator()(update);
           }
-
-          try {
-              _db.insert_user_status(user_id, timestamp, is_online);
-          } catch(const std::exception & ex) { std::cerr << ex.what() << std::endl; }
-      },
-      [](auto & /*update*/) {});
+      });
     td_api::downcast_call(*update, handler);
 }
 
-void tg_client::process_response(td::ClientManager::Response response) {
+template <typename Derived>
+void tg_client<Derived>::process_response(td::ClientManager::Response response) {
     if(!response.object) {
         return;
     }
@@ -79,34 +55,22 @@ void tg_client::process_response(td::ClientManager::Response response) {
     }
 }
 
-void tg_client::restart() {
+template <typename Derived>
+void tg_client<Derived>::restart() {
     _client_manager = {};
-    // Could be done after splitting into base and client-specific functionality
-    //*this           = {};
+    *this           = {};
 }
 
-std::string tg_client::get_user_name(std::int64_t user_id) const {
-    auto it = users_.find(user_id);
-    if(it == users_.end()) {
-        return "unknown user";
-    }
-
-    auto result = it->second->first_name_;
-    if(!it->second->last_name_.empty()) {
-        result += " ";
-        result += it->second->last_name_;
-    }
-    return result;
-}
-
-void tg_client::event_loop() {
+template <typename Derived>
+void tg_client<Derived>::event_loop() {
     while(true) {
         if(auto response = _client_manager.receive(60); response.object)
             process_response(std::move(response));
     }
 }
 
-void tg_client::on_authorization_state_update() {
+template <typename Derived>
+void tg_client<Derived>::on_authorization_state_update() {
     authentication_query_id_++;
 
     const auto handler = overloaded(
@@ -179,7 +143,8 @@ void tg_client::on_authorization_state_update() {
     td_api::downcast_call(*authorization_state_, handler);
 }
 
-std::function<void(tg_client::Object)> tg_client::create_authentication_query_handler() {
+template <typename Derived>
+std::function<void(Object)> tg_client<Derived>::create_authentication_query_handler() {
     return [this, id = authentication_query_id_](Object object) {
         if(id == authentication_query_id_) {
             check_authentication_error(std::move(object));
@@ -187,7 +152,8 @@ std::function<void(tg_client::Object)> tg_client::create_authentication_query_ha
     };
 }
 
-void tg_client::check_authentication_error(tg_client::Object object) {
+template <typename Derived>
+void tg_client<Derived>::check_authentication_error(Object object) {
     if(const auto error = try_move_as<td_api::error>(object)) {
         std::cout << "Error: " << to_string(error) << std::flush;
         on_authorization_state_update();

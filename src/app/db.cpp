@@ -1,10 +1,5 @@
 #include "db.hpp"
 
-#include <array>
-
-namespace {
-void check_sqlite3_error(int rc, sqlite3 * db) {}
-}
 db::db(fs::path sqlite3_path) {
     sqlite3 * db = {};
 
