@@ -13,8 +13,6 @@ class tg_client {
 
   protected:
     void send_query(td_api::object_ptr<td_api::Function> f, std::function<void(Object)> handler);
-    std::unordered_map<std::int64_t, td_api::object_ptr<td_api::user>> _users;
-
   private:
     inline std::uint64_t next_query_id() { return ++_current_query_id; }
     void                 process_update(td_api::object_ptr<td_api::Object> update);

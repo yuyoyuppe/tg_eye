@@ -24,10 +24,15 @@ struct db final {
     db(fs::path sqlite3_path);
 
     void insert_user_status(int64_t telegram_user_id, int32_t timestamp, bool is_online);
+    void update_user_info(const int64_t       telegram_user_id,
+                          const std::string & full_name,
+                          const std::string & user_name,
+                          const std::string & profile_photo);
 
   private:
     void CHK(const int rc, const int expected = SQLITE_OK, std::stacktrace st = std::stacktrace::current());
 
     std::unique_ptr<sqlite3, sqlite3_deleter>      _db;
-    std::unique_ptr<sqlite3_stmt, sqlite3_deleter> _insert_stmt;
+    std::unique_ptr<sqlite3_stmt, sqlite3_deleter> _insert_user_status_stmt;
+    std::unique_ptr<sqlite3_stmt, sqlite3_deleter> _update_user_info_stmt;
 };

@@ -26,10 +26,6 @@ void tg_client<Derived>::process_update(td_api::object_ptr<td_api::Object> updat
           authorization_state_ = std::move(update_authorization_state.authorization_state_);
           on_authorization_state_update();
       },
-      [this](td_api::updateUser & update_user) {
-          auto user_id    = update_user.user_->id_;
-          _users[user_id] = std::move(update_user.user_);
-      },
       [this]<typename update_t>(update_t & update) {
           constexpr bool derived_has_handler = requires(Derived client, update_t update) { client(update); };
           if constexpr(derived_has_handler) {
