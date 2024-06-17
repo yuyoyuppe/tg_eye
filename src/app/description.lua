@@ -1,6 +1,7 @@
 return {
     kind = "ConsoleApp",
     staticruntime = "On",
+    cppdialect = "C++latest",
     runtime = "Release",
     defines = {"_ITERATOR_DEBUG_LEVEL=0"},
     externalincludedirs = {_OPTIONS["tdpath"], _OPTIONS["tdpath"] .. "/tdlib/include"},

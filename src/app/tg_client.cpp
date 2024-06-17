@@ -20,17 +20,17 @@ std::string format_timestamp(int32_t timestamp) {
 }
 
 
-tg_client::tg_client() {
-    client_id_ = client_manager_.create_client_id();
+tg_client::tg_client(db user_status_db) : _db{std::move(user_status_db)} {
+    _client_id = _client_manager.create_client_id();
     send_query(td_api::make_object<td_api::getOption>("version"), {});
-    event_loop_ = std::thread{[this] { event_loop(); }};
+    _event_loop = std::thread{[this] { event_loop(); }};
 }
 
 void tg_client::send_query(td_api::object_ptr<td_api::Function> f, std::function<void(Object)> handler) {
     const auto query_id = next_query_id();
     if(handler)
         handlers_.emplace(query_id, std::move(handler));
-    client_manager_.send(client_id_, query_id, std::move(f));
+    _client_manager.send(_client_id, query_id, std::move(f));
 }
 
 void tg_client::process_update(td_api::object_ptr<td_api::Object> update) {
@@ -46,12 +46,19 @@ void tg_client::process_update(td_api::object_ptr<td_api::Object> update) {
       [this](td_api::updateUserStatus & update_user_status) {
           const auto user_id = update_user_status.user_id_;
           std::cout << get_user_name(user_id) << " is ";
-
+          bool is_online = false;
+          auto timestamp = static_cast<int32_t>(std::time(nullptr));
           if(const auto online = try_move_as<td_api::userStatusOnline>(update_user_status.status_)) {
+              is_online = true;
               std::cout << "online until " << format_timestamp(online->expires_) << "\n";
           } else if(const auto offline = try_move_as<td_api::userStatusOffline>(update_user_status.status_)) {
+              timestamp = offline->was_online_;
               std::cout << "offline since " << format_timestamp(offline->was_online_) << "\n";
           }
+
+          try {
+              _db.insert_user_status(user_id, timestamp, is_online);
+          } catch(const std::exception & ex) { std::cerr << ex.what() << std::endl; }
       },
       [](auto & /*update*/) {});
     td_api::downcast_call(*update, handler);
@@ -73,8 +80,9 @@ void tg_client::process_response(td::ClientManager::Response response) {
 }
 
 void tg_client::restart() {
-    client_manager_ = {};
-    *this           = {};
+    _client_manager = {};
+    // Could be done after splitting into base and client-specific functionality
+    //*this           = {};
 }
 
 std::string tg_client::get_user_name(std::int64_t user_id) const {
@@ -93,7 +101,7 @@ std::string tg_client::get_user_name(std::int64_t user_id) const {
 
 void tg_client::event_loop() {
     while(true) {
-        if(auto response = client_manager_.receive(60); response.object)
+        if(auto response = _client_manager.receive(60); response.object)
             process_response(std::move(response));
     }
 }
