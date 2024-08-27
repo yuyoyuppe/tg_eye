@@ -1,0 +1,13 @@
+[package]
+name = "stats"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = "0"
+colog = "1"
+humantime = "2"
+log = "0"
+sea-orm = { version = "1", features = ["default", "sqlx", "sqlx-sqlite", "runtime-tokio", "macros"]}
+tokio = { version = "1", features = ["full"] }
