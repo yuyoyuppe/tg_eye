@@ -36,6 +36,5 @@ pacman -S clang cmake gperf php
 - Build tg_eye
 ```sh
 # premake5 is dying -> override cpp standard
-premake5 gmake2 && sed -i 's/-std=c++20/-std=c++23/g' ./build/app.make  && make -C build config=release
+premake5 gmake2 && sed -i 's/-std=c++20/-std=c++23/g' ./build/app.make && make -C build config=release
 ```
-- 

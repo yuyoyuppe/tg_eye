@@ -1,12 +1,15 @@
 mod entities;
 
 use anyhow::Result;
-use chrono::{Local, NaiveDate, TimeDelta, TimeZone};
+use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, TimeDelta, TimeZone};
+use core::ops::Range;
 use entities::prelude::{UserInfo, UserStatus};
 use entities::user_info::Model as UserInfoModel;
 use entities::user_status::Model as UserStatusModel;
 use humantime::format_duration;
-use log::{info, warn};
+use iset::IntervalSet;
+use itertools::Itertools;
+use log::info;
 use sea_orm::{ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use sea_orm::{ConnectOptions, QueryOrder};
 use std::collections::HashMap;
@@ -14,109 +17,157 @@ use std::time::Duration;
 
 const DATABASE_URL: &str = "sqlite:./../tg_eye_stats.sqlite3?mode=ro";
 
-fn online_str(is_online: bool) -> &'static str {
-    if is_online {
-        "online"
-    } else {
-        "offline"
+fn build_online_intervals(s: &[UserStatusModel]) -> IntervalSet<DateTime<Local>> {
+    let mut intervals: IntervalSet<DateTime<Local>> = IntervalSet::new();
+    _ = s
+        .iter()
+        .map(|s| {
+            let is_online = s.status == 1;
+            let datetime = Local.timestamp_opt(s.timestamp as i64, 0).unwrap();
+            (is_online, datetime)
+        })
+        .tuple_windows()
+        .fold(
+            None,
+            |start_online, ((cur_online, cur_dt), (next_online, next_dt))| match (
+                cur_online,
+                next_online,
+            ) {
+                (true, true) => start_online.or(Some(cur_dt)),
+                (true, false) => {
+                    let start = start_online.unwrap_or(cur_dt);
+                    if start != next_dt {
+                        intervals.insert(start..next_dt);
+                    }
+                    None
+                }
+                (false, true) => {
+                    assert_eq!(start_online, None);
+                    Some(next_dt)
+                }
+                (false, false) => {
+                    assert_eq!(start_online, None);
+                    None
+                }
+            },
+        );
+
+    intervals
+}
+
+fn interval_duration(interval: Range<DateTime<Local>>) -> Duration {
+    Duration::from_secs((interval.end - interval.start).num_seconds() as u64)
+}
+
+fn clip_interval(
+    interval: Range<DateTime<Local>>,
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+) -> Range<DateTime<Local>> {
+    Range::<DateTime<Local>> {
+        start: interval.start.max(start),
+        end: interval.end.min(end),
     }
 }
 
-fn online_time_per_day_in_seconds(s: &Vec<UserStatusModel>) -> HashMap<NaiveDate, u64> {
-    let mut num_sec_per_day: HashMap<NaiveDate, u64> = HashMap::new();
-    let mut last_status: Option<&UserStatusModel> = None;
+fn online_time_per_day(
+    intervals: &IntervalSet<DateTime<Local>>,
+) -> HashMap<DateTime<Local>, Duration> {
+    let mut result = HashMap::new();
+    let range = if let Some(r) = intervals.range() {
+        r
+    } else {
+        return result;
+    };
+    let first_day_start: DateTime<Local> = range
+        .start
+        .date_naive()
+        .and_time(NaiveTime::MIN)
+        .and_utc()
+        .into();
+    let last_day_end: DateTime<Local> = range
+        .end
+        .date_naive()
+        .and_time(NaiveDateTime::MAX.time())
+        .and_utc()
+        .into();
 
-    for status in s {
-        let current_datetime = Local.timestamp_opt(status.timestamp as i64, 0).unwrap();
-        let current_day = current_datetime.date_naive();
-        let current_online = status.status == 1;
+    let mut day_start = first_day_start;
+    while day_start <= last_day_end {
+        let day_end = (day_start + TimeDelta::days(1))
+            .with_time(NaiveTime::MIN)
+            .unwrap();
 
-        if let Some(last) = last_status {
-            let last_datetime = Local.timestamp_opt(last.timestamp as i64, 0).unwrap();
-            let last_day = last_datetime.date_naive();
-            let last_online = last.status == 1;
+        let daily_duration = intervals
+            .iter(day_start..day_end)
+            .map(|i| {
+                let clipped = clip_interval(i, day_start, day_end);
+                interval_duration(clipped)
+            })
+            .sum();
 
-            let duration =
-                Duration::from_secs((current_datetime - last_datetime).num_seconds() as u64);
+        if daily_duration > Duration::from_secs(1) {
+            result.insert(day_start, daily_duration);
+        }
+        day_start = day_end;
+    }
 
-            warn!(
-                "{} {}->{} to {}",
-                last_datetime.format("%-d %B %H:%M:%S"),
-                online_str(last_online),
-                online_str(current_online),
-                format_duration(duration)
-            );
-            if current_online == last_online {
-                // if duration_with_same_status > Duration::from_secs(60 * 6) {
-                //     warn!(
-                //         "online = {} duration = {} id: {}",
-                //         last_online,
-                //         format_duration(duration_with_same_status),
-                //         status.telegram_user_id
-                //     );
-            }
-            if last_online && !current_online {
-                // Transition from online to offline
-                if current_day == last_day {
-                    // Same day
-                    *num_sec_per_day.entry(current_day).or_insert(0) += duration.as_secs();
-                } else {
-                    // Span multiple days
-                    let mut day = last_day;
-                    while day <= current_day {
-                        let start = if day == last_day {
-                            last_datetime
-                        } else {
-                            Local
-                                .from_local_date(&day)
-                                .unwrap()
-                                .and_hms_opt(0, 0, 0)
-                                .unwrap()
-                        };
+    result
+}
 
-                        let end = if day == current_day {
-                            current_datetime
-                        } else {
-                            Local
-                                .from_local_date(&day)
-                                .unwrap()
-                                .and_hms_opt(23, 59, 59)
-                                .unwrap()
-                        };
+fn format_datetime(dt: DateTime<Local>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
 
-                        let duration = (end - start).num_seconds();
-                        *num_sec_per_day.entry(day).or_insert(0) += duration as u64;
+fn print_long_offline_intervals(intervals: &IntervalSet<DateTime<Local>>) {
+    if let Some(range) = intervals.range() {
+        let mut last_end = range.start;
+        let three_hours = TimeDelta::hours(3);
 
-                        day += TimeDelta::days(1);
-                    }
+        for interval in intervals.iter(range.start..range.end) {
+            if interval.start > last_end {
+                let offline_duration = interval.start - last_end;
+                if offline_duration > three_hours {
+                    println!(
+                        "Offline interval: {} to {} (duration: {})",
+                        format_datetime(last_end),
+                        format_datetime(interval.start),
+                        format_duration(Duration::from_secs(offline_duration.num_seconds() as u64))
+                    );
                 }
             }
+            last_end = last_end.max(interval.end);
         }
 
-        last_status = Some(status);
+        // Check for offline interval after the last online interval
+        if range.end > last_end {
+            let offline_duration = range.end - last_end;
+            if offline_duration > three_hours {
+                println!(
+                    "Offline interval: {} to {} (duration: {})",
+                    format_datetime(last_end),
+                    format_datetime(range.end),
+                    format_duration(Duration::from_secs(offline_duration.num_seconds() as u64))
+                );
+            }
+        }
     }
-
-    num_sec_per_day
 }
 
-fn calculate_median_time_per_day(times: &Vec<(NaiveDate, u64)>) -> Option<u64> {
+fn calculate_median_time_per_day(times: &[(DateTime<Local>, Duration)]) -> Option<Duration> {
     if times.is_empty() {
         return None;
     }
 
-    // Extract just the times (u64 values) into a separate vector
-    let mut durations: Vec<u64> = times.iter().map(|(_, duration)| *duration).collect();
+    let mut durations: Vec<Duration> = times.iter().map(|(_, duration)| *duration).collect();
 
-    // Sort the durations
     durations.sort_unstable();
 
     let len = durations.len();
     if len % 2 == 0 {
-        // If even number of elements, average the two middle values
         let mid = len / 2;
         Some((durations[mid - 1] + durations[mid]) / 2)
     } else {
-        // If odd number of elements, return the middle value
         Some(durations[len / 2])
     }
 }
@@ -135,12 +186,13 @@ async fn print_users(users: &Vec<UserInfoModel>, db: &DatabaseConnection) -> Res
             None => String::from("Last online: ---"),
         };
 
-        let mut online_times = online_time_per_day_in_seconds(&statuses)
+        let intervals = build_online_intervals(&statuses);
+
+        let mut online_times = online_time_per_day(&intervals)
             .into_iter()
-            .collect::<Vec<(NaiveDate, u64)>>();
+            .collect::<Vec<(_, _)>>();
         online_times.sort_by(|info1, info2| info1.0.partial_cmp(&info2.0).unwrap());
-        let median_time_per_day =
-            Duration::from_secs(calculate_median_time_per_day(&online_times).unwrap_or_default());
+        let median_time_per_day = calculate_median_time_per_day(&online_times).unwrap_or_default();
 
         info!(
             "{0}\tid:\t{1}\t{2}\tmedian online time per day: {3}",
@@ -150,13 +202,12 @@ async fn print_users(users: &Vec<UserInfoModel>, db: &DatabaseConnection) -> Res
             format_duration(median_time_per_day)
         );
 
-        // for info in online_times {
-        //     info!(
-        //         "Online @{} is {}",
-        //         info.0.format("%-d %B"),
-        //         format_duration(Duration::from_secs(info.1))
-        //     )
-        // }
+        if cfg!(debug_assertions) {
+            print_long_offline_intervals(&intervals);
+            for info in online_times {
+                info!("{}: {}", info.0.format("%-d %B"), format_duration(info.1))
+            }
+        }
     }
 
     Ok(())
